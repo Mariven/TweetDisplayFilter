@@ -57,24 +57,25 @@ const Text = objectify(
 		all: (sel) => Array.from(el.querySelectorAll(sel)).map(e => e.innerText),
 		allSet: (sel) => {
 			const r = [];
-			for(let e of Array.from(el.querySelectorAll(sel)).map(e => e.innerText)) {
-				if(e?.length && e.length > 0 && !r.includes(e)) {
+			for(let e of Array.from(el.querySelectorAll(sel)).map(e => e.innerText))
+				if(e?.length > 0 && !r.includes(e))
 					r.push(e);
-				}
-			}
 			return r;
 		},
 		id: (id) => el.getElementById(id).innerText,
 	})
 );
 
-
 function countAsNum(s) {
+    s = s.trim().replace(/,/g, '');
 	if (s.match(/^[0-9]*$/)) {
 		return parseInt(s || "0");
 	}
-	let multiplier = s.slice(-1) == "K" ? 1000 : s.slice(-1) == "M" ? 1000000 : 0;
-	return multiplier ? parseFloat(s.slice(0,-1)) * multiplier : false;
+	if (s.match(/^[0-9\.]+[KMG]$/)) {
+        let size = s.slice(-1), num = parseFloat(s.slice(0,-1));
+        return num * ({K: 1000, M: 1000000, G: 1000000000}[size]);
+    }
+    return false;
 }
 
 function getRepostData(article, iconLabels) {
@@ -88,33 +89,76 @@ function getRepostData(article, iconLabels) {
 
 function getStats(article, iconLabels) {
 	let stats = {};
-	let interactions = Text(article).all(":is(button,a):has(>div>div>svg):is([aria-label*='.'])").map(countAsNum);
-	if (!interactions || interactions.length == 0) {
-		return null;
-	}
-	interactions = interactions.filter(x=>x!==null);
-	if (interactions.length !== 4) {
-		return null;
-	}
-	stats.replies = interactions[0];
-	stats.retweets = interactions[1];
-	stats.likes = interactions[2];
-	stats.views = interactions[3];
+	// let interactions = Text(article).all(":is(button,a):has(>div>div>svg):is([aria-label*='.'])").map(countAsNum);
+	[
+        ["replies", "[data-testid$='reply']"],
+        ["retweets", "[data-testid$='retweet']"],
+        ["likes", "[data-testid$='like']"],
+        ["views", "[href$='analytics']"]
+    ].forEach(([name, sel]) => {
+        stats[name] = Text(article).all(sel + " span:not(:has(*))").map(countAsNum)[0]
+    });
+	// if (!interactions || interactions.length == 0) {
+	// 	return null;
+	// }
+	// interactions = interactions.filter(x=>x!==null);
+	// if (interactions.length !== 4) {
+	// 	return null;
+	// }
+	// stats.replies = interactions[0];
+	// stats.retweets = interactions[1];
+	// stats.likes = interactions[2];
+	// stats.views = interactions[3];
 	return stats;
 }
 
 function getContent(article, iconLabels) {
-	let lines = Text(article).allSet("div:not(:has(svg))");
-	lines = lines.filter(x=>!iconLabels.includes(x)).filter(x=>(!x.includes("\n") || !(isSubarray(x.split("\n"), lines))));
-	let content = {};
-	content.author = {name: lines[0], id: lines.filter(x=>x.match(/^@.*/))[0]};
-	content.date = lines.filter((x)=>x.match(/^([A-Z][a-z]+ [0-9]+|[0-9]+[smhd])$/))[0];
-	content.text = lines[lines.indexOf(content.date) + 1];
+    let content = { author: {}, quote: {} };
+    let text = Text(article).all("[data-testid$='tweetText']");
+    if (text.length === 0) {
+        content.text = Text(article).get("div[lang]")?.innerText;
+    } else {
+        content.text = text[0];
+    }
+    if (text.length > 1) { // the second one is a quoted tweet
+        content.quote.text = text[1];
+    }
+    let userLine = Dom(article).all("[data-testid$='User-Name']");
+    if (userLine.length != 0) {
+        //content.author.id = "@" + Dom(userLine[0]).get("a[href^='/']")?.getAttribute("href")?.slice(1);
+        content.author.id = userLine[0]?.innerText.split("\n")[1];
+        content.author.name = userLine[0]?.innerText.split("\n")[0];
+        if (Dom(userLine[0]).get("[data-testid*='verified']")) {
+            content.author.verified = true;
+        }
+    }
+    if (content.quote.text && userLine.length > 1) {
+        content.quote.author = {};
+        //content.quote.author.id = "@" + Dom(userLine[1]).get("a[href^='/']")?.getAttribute("href")?.slice(1);
+        content.quote.author.id = userLine[1]?.innerText.split("\n")[1];
+        content.quote.author.name = userLine[1]?.innerText.split("\n")[0];
+        if (Dom(userLine[1]).get("[data-testid*='verified']")) {
+            content.quote.author.verified = true;
+        }
+    }
+
+    let date = Text(article).all("time");
+    if (date.length > 0) {
+        content.date = date[0];
+    }
+    if (content.quote.text && date.length > 1) {
+        content.quote.date = date[1];
+    }
+	// let lines = Text(article).allSet("div:not(:has(svg))");
+	// lines = lines.filter(x=>!iconLabels.includes(x)).filter(x=>(!x.includes("\n") || !(isSubarray(x.split("\n"), lines))));
+	// content.author = {name: lines[0], id: lines.filter(x=>x.match(/^@.*/))[0]};
+	// content.date = lines.filter((x)=>x.match(/^([A-Z][a-z]+ [0-9]+|[0-9]+[smhd])$/))[0];
+	// content.text = lines[lines.indexOf(content.date) + 1];
 	return content;
 }
 
 function getId(article) {
-	let strings = Dom(article).get("a[href*='/status/']").getAttribute("href").match(/[0-9]+/);
+	let strings = Dom(article).get("a[href*='/status/']").getAttribute("href").match(/[0-9]+$/);
 	if (strings.length > 0) {
 		return parseInt(strings[0]);
 	}
@@ -122,8 +166,10 @@ function getId(article) {
 }
 
 function getImages(article, iconlabels) {
-	let images = Dom(article).all("img").slice(1).map(x=>x.getAttribute("src"));
-	return images;
+    let images = Array.from(article.querySelectorAll("img"))
+        .map(x=>x.getAttribute("src"))
+        .filter(x=>x.match(/https:\/\/pbs.twimg.com\/(media|[^/]*?video_thumb)\//));
+    return images;
 }
 
 function getTweetData(article, cache = {}, tweetRulesManager = null) {
@@ -132,6 +178,7 @@ function getTweetData(article, cache = {}, tweetRulesManager = null) {
     let iconLabels = Text(article).allSet("div:has(>div>svg)");
     try {
         data.id = getId(article);
+        data.images = getImages(article, iconLabels) || [];
     } catch(error) {
         // console.error('Error parsing article: ', error);
         return null;
@@ -141,10 +188,13 @@ function getTweetData(article, cache = {}, tweetRulesManager = null) {
             data.repost = getRepostData(article, iconLabels);
             data.stats = getStats(article, iconLabels) || {};
             data.content = getContent(article, iconLabels) || {};
-            data.images = getImages(article, iconLabels) || [];
             cache[data.id] = data;
 			console.log(data);
         } else {
+            if (data.images.length > cache[data.id].images.length) {
+                cache[data.id].images = data.images;
+                console.log("Added image data for tweet with id " + data.id);
+            }
             data = cache[data.id];
         }
     } catch(error) {
@@ -177,10 +227,10 @@ function isSubarray(A0, A, consecutive = false) {
 
 
 const MENU_HTML = `
-<div id="tweet-rules-menu" class="tweet-rules-menu hidden">  <!-- Initially hidden -->
+<div id="tweet-rules-menu" class="tweet-rules-menu hidden">
     <div class="menu-header">
         <h3>Tweet Style Rules</h3>
-        <button id="toggle-menu" class="toggle-btn">Show</button> <!-- Initial text -->
+        <button id="toggle-menu" class="toggle-btn">Show</button>
     </div>
     <div class="menu-content">
         <div class="section">
@@ -226,6 +276,7 @@ const MENU_CSS = `
 	overflow: auto;
     box-shadow: 0 2px 10px rgba(0,0,0,0.1);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    transition: opacity 0.1s;
 }
 
 .tweet-rules-menu h4 {
@@ -245,6 +296,14 @@ const MENU_CSS = `
 
 .menu-header h3 {
     margin: 0;
+}
+
+.tweet-rules-menu.hidden {
+    opacity: 0.5;
+}
+
+.tweet-rules-menu.hidden:hover {
+    opacity: 0.8;
 }
 
 .tweet-rules-menu.hidden .menu-content {
@@ -286,7 +345,6 @@ const MENU_CSS = `
     color: #1da1f2;
 }
 
-/* Adjust the table headers */
 .table-header {
     display: flex;
     align-items: center;
@@ -300,7 +358,6 @@ const MENU_CSS = `
     margin-right: 5px;
 }
 
-/* Adjust row styling */
 .class-row, .rule-row {
     display: flex;
     align-items: center;
@@ -310,7 +367,6 @@ const MENU_CSS = `
     margin-right: 5px;
 }
 
-/* Adjust the widths */
 .class-name {
     width: 75px;
 }
@@ -367,8 +423,9 @@ input {
 `;
 
 const FIELD_OPTIONS = [
-//    "name",
+    "name",
     "id",
+    "verified",
     "views",
     "likes",
     "retweets",
@@ -376,8 +433,13 @@ const FIELD_OPTIONS = [
     "text",
     "date",
 	"images",
-//	"retweeter name",
-	"reposter id"
+	"reposter name",
+	"reposter id",
+	"quoted name",
+	"quoted id",
+	"quoted text",
+	"quoted date",
+	"quoted verified",
 ];
 
 const RELATION_OPTIONS = [
@@ -387,8 +449,10 @@ const RELATION_OPTIONS = [
     "doesn't equal",
     "at least",
     "at most",
-	"exists",
-	"doesn't exist"
+	"is nonempty",
+	"is empty",
+	"is true",
+	"is false",
 ];
 
 class TweetRulesManager {
@@ -545,6 +609,7 @@ class TweetRulesManager {
 			switch(field) {
 				case 'name': return tweetData.content?.author?.name || '';
 				case 'id': return tweetData.content?.author?.id || '';
+				case 'verified': return tweetData.content?.author?.verified || false;
 				case 'views': return tweetData.stats?.views || 0;
 				case 'likes': return tweetData.stats?.likes || 0;
 				case 'retweets': return tweetData.stats?.retweets || 0;
@@ -554,6 +619,11 @@ class TweetRulesManager {
 				case 'images': return tweetData.images || [];
 				case 'reposter name': return tweetData.repost?.name || '';
 				case 'reposter id': return tweetData.repost?.id || '';
+				case 'quoted name': return tweetData.content?.quote?.author?.name || '';
+				case 'quoted id': return tweetData.content?.quote?.author?.id || '';
+				case 'quoted text': return tweetData.content?.quote?.content?.text || '';
+				case 'quoted date': return tweetData.content?.quote?.content?.date || '';
+				case 'quoted verified': return tweetData.content?.quote?.author?.verified || false;
 				default: return '';
 			}
 		};
@@ -570,6 +640,8 @@ class TweetRulesManager {
 			case 'at most': return Number(value) <= Number(arg);
 			case 'exists': return value;
 			case 'doesn\'t exist': return !value;
+			case 'is true': return value;
+			case 'is false': return !value;
 			default: return false;
 		}
 	}
